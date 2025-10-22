@@ -602,6 +602,13 @@ func (rw *responseWrapper) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// Flush implements http.Flusher interface for real-time streaming
+func (rw *responseWrapper) Flush() {
+	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 // getClientIP gets the client IP address from request
 func getClientIP(r *http.Request) string {
 	// Check X-Forwarded-For header

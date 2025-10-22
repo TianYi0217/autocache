@@ -153,11 +153,31 @@ func (pc *ProxyClient) ForwardStreamingRequest(req *types.AnthropicRequest, head
 	// Set status code
 	responseWriter.WriteHeader(resp.StatusCode)
 
-	// Stream the response
-	_, err = io.Copy(responseWriter, resp.Body)
-	if err != nil {
-		pc.logger.WithError(err).Error("Failed to stream response")
-		return fmt.Errorf("failed to stream response: %w", err)
+	// Get flusher for real-time streaming
+	flusher, _ := responseWriter.(http.Flusher)
+
+	// Stream the response with real-time flushing
+	// Use small buffer (512 bytes) to minimize latency for SSE events (typically 100-200 bytes each)
+	buf := make([]byte, 512)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			_, writeErr := responseWriter.Write(buf[:n])
+			if writeErr != nil {
+				pc.logger.WithError(writeErr).Error("Failed to write response chunk")
+				return fmt.Errorf("failed to write response: %w", writeErr)
+			}
+			if flusher != nil {
+				flusher.Flush() // Flush immediately for real-time streaming
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			pc.logger.WithError(err).Error("Failed to read response stream")
+			return fmt.Errorf("failed to read response stream: %w", err)
+		}
 	}
 
 	return nil
