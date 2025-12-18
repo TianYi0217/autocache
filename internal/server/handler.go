@@ -500,12 +500,58 @@ func (ah *AutocacheHandler) HandleSavings(w http.ResponseWriter, r *http.Request
 	_ = json.NewEncoder(w).Encode(response)
 }
 
+
+// HandleModels handles GET /v1/models requests
+func (ah *AutocacheHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		ah.writeError(w, http.StatusMethodNotAllowed, "Only GET method is allowed")
+		return
+	}
+
+	// Extract API key
+	apiKey := ah.getAPIKey(r)
+	headers := client.CreateHeadersMap(r.Header, apiKey, ah.logger)
+
+	// Forward the request
+	resp, err := ah.proxyClient.GetModels(headers)
+	if err != nil {
+		ah.logger.WithError(err).Error("Failed to forward request")
+		ah.writeError(w, http.StatusBadGateway, "Failed to forward request to Anthropic API")
+		return
+	}
+
+	// Read and parse response
+	_, responseBody, err := ah.proxyClient.ReadAndParseResponse(resp)
+	if err != nil {
+		ah.logger.WithError(err).Error("Failed to read response")
+		ah.writeRawResponse(w, resp.StatusCode, responseBody, resp.Header)
+		return
+	}
+
+	// Copy response headers
+	for key, values := range resp.Header {
+		if key == "Content-Encoding" {
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	// Write the response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(responseBody)
+}
+
 // SetupRoutes sets up HTTP routes
 func (ah *AutocacheHandler) SetupRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// Main API endpoint
 	mux.HandleFunc("/v1/messages", ah.HandleMessages)
+	// Models endpoint
+	mux.HandleFunc("/v1/models", ah.HandleModels)
 
 	// Health check
 	mux.HandleFunc("/health", ah.HandleHealth)
