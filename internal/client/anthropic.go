@@ -153,11 +153,31 @@ func (pc *ProxyClient) ForwardStreamingRequest(req *types.AnthropicRequest, head
 	// Set status code
 	responseWriter.WriteHeader(resp.StatusCode)
 
-	// Stream the response
-	_, err = io.Copy(responseWriter, resp.Body)
-	if err != nil {
-		pc.logger.WithError(err).Error("Failed to stream response")
-		return fmt.Errorf("failed to stream response: %w", err)
+	// Get flusher for real-time streaming
+	flusher, _ := responseWriter.(http.Flusher)
+
+	// Stream the response with real-time flushing
+	// Use small buffer (512 bytes) to minimize latency for SSE events (typically 100-200 bytes each)
+	buf := make([]byte, 512)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			_, writeErr := responseWriter.Write(buf[:n])
+			if writeErr != nil {
+				pc.logger.WithError(writeErr).Error("Failed to write response chunk")
+				return fmt.Errorf("failed to write response: %w", writeErr)
+			}
+			if flusher != nil {
+				flusher.Flush() // Flush immediately for real-time streaming
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			pc.logger.WithError(err).Error("Failed to read response stream")
+			return fmt.Errorf("failed to read response stream: %w", err)
+		}
 	}
 
 	return nil
@@ -384,6 +404,37 @@ func CreateHeadersMap(reqHeaders http.Header, apiKey string, logger *logrus.Logg
 // IsStreamingRequest checks if the request is for streaming
 func IsStreamingRequest(req *types.AnthropicRequest) bool {
 	return req.Stream != nil && *req.Stream
+}
+
+// GetModels fetches available models from Anthropic API
+func (pc *ProxyClient) GetModels(headers map[string]string) (*http.Response, error) {
+	pc.logger.Debug("Fetching models from Anthropic API")
+
+	// Create HTTP request
+	httpReq, err := http.NewRequest("GET", pc.anthropicURL+"/v1/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+
+	// Set headers
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("anthropic-version", "2023-06-01") // Required by Anthropic API
+
+	// Forward original headers
+	for key, value := range headers {
+		// Skip headers that might interfere
+		if !shouldSkipHeader(key) {
+			httpReq.Header.Set(key, value)
+		}
+	}
+
+	// Make the request
+	resp, err := pc.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request to Anthropic API: %w", err)
+	}
+
+	return resp, nil
 }
 
 // LogRequestSummary logs a summary of the request for debugging
