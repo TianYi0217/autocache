@@ -406,6 +406,37 @@ func IsStreamingRequest(req *types.AnthropicRequest) bool {
 	return req.Stream != nil && *req.Stream
 }
 
+// GetModels fetches available models from Anthropic API
+func (pc *ProxyClient) GetModels(headers map[string]string) (*http.Response, error) {
+	pc.logger.Debug("Fetching models from Anthropic API")
+
+	// Create HTTP request
+	httpReq, err := http.NewRequest("GET", pc.anthropicURL+"/v1/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+
+	// Set headers
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("anthropic-version", "2023-06-01") // Required by Anthropic API
+
+	// Forward original headers
+	for key, value := range headers {
+		// Skip headers that might interfere
+		if !shouldSkipHeader(key) {
+			httpReq.Header.Set(key, value)
+		}
+	}
+
+	// Make the request
+	resp, err := pc.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request to Anthropic API: %w", err)
+	}
+
+	return resp, nil
+}
+
 // LogRequestSummary logs a summary of the request for debugging
 func (pc *ProxyClient) LogRequestSummary(req *types.AnthropicRequest) {
 	pc.logger.WithFields(logrus.Fields{
