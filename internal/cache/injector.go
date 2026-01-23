@@ -97,15 +97,15 @@ func (ci *CacheInjector) GetPricing() *pricing.PricingCalculator {
 
 // CacheCandidate represents a potential cache breakpoint
 type CacheCandidate struct {
-	Position     string  // "system", "tools", "message_0_block_1", etc.
-	Tokens       int     // Token count
-	ContentType  string  // "system", "tools", "content"
-	TTL          string  // "5m" or "1h"
-	ROIScore     float64 // ROI score for prioritization
-	WriteCost    float64 // Cost to write cache
-	ReadSavings  float64 // Savings per read
-	BreakEven    int     // Requests to break even
-	Content      interface{} // Reference to the actual content (for modification)
+	Position    string      // "system", "tools", "message_0_block_1", etc.
+	Tokens      int         // Token count
+	ContentType string      // "system", "tools", "content"
+	TTL         string      // "5m" or "1h"
+	ROIScore    float64     // ROI score for prioritization
+	WriteCost   float64     // Cost to write cache
+	ReadSavings float64     // Savings per read
+	BreakEven   int         // Requests to break even
+	Content     interface{} // Reference to the actual content (for modification)
 }
 
 // InjectCacheControl analyzes a request and injects optimal cache control
@@ -116,6 +116,9 @@ func (ci *CacheInjector) InjectCacheControl(req *types.AnthropicRequest) (*types
 		"model":    req.Model,
 		"strategy": ci.strategy,
 	}).Debug("Starting cache injection analysis")
+
+	// Clear any existing cache_control to avoid exceeding the 4-block limit
+	ci.ClearExistingCacheControl(req)
 
 	// Get strategy configuration
 	strategyConfig := types.GetStrategyConfig(ci.strategy)
@@ -141,15 +144,38 @@ func (ci *CacheInjector) InjectCacheControl(req *types.AnthropicRequest) (*types
 	metadata := ci.calculateMetadata(req, breakpoints, startTime)
 
 	ci.logger.WithFields(logrus.Fields{
-		"total_tokens":   metadata.TotalTokens,
-		"cached_tokens":  metadata.CachedTokens,
-		"cache_ratio":    metadata.CacheRatio,
-		"breakpoints":    len(breakpoints),
-		"roi_percent":    metadata.ROI.PercentSavings,
-		"break_even":     metadata.ROI.BreakEvenRequests,
+		"total_tokens":  metadata.TotalTokens,
+		"cached_tokens": metadata.CachedTokens,
+		"cache_ratio":   metadata.CacheRatio,
+		"breakpoints":   len(breakpoints),
+		"roi_percent":   metadata.ROI.PercentSavings,
+		"break_even":    metadata.ROI.BreakEvenRequests,
 	}).Info("Cache injection completed")
 
 	return metadata, nil
+}
+
+// ClearExistingCacheControl removes all existing cache_control from a request
+// This prevents exceeding the 4-block limit when injecting new cache controls
+func (ci *CacheInjector) ClearExistingCacheControl(req *types.AnthropicRequest) {
+	// Clear cache control from SystemBlocks
+	for i := range req.SystemBlocks {
+		req.SystemBlocks[i].CacheControl = nil
+	}
+
+	// Clear cache control from Tools
+	for i := range req.Tools {
+		req.Tools[i].CacheControl = nil
+	}
+
+	// Clear cache control from Messages
+	for i := range req.Messages {
+		for j := range req.Messages[i].Content {
+			req.Messages[i].Content[j].CacheControl = nil
+		}
+	}
+
+	ci.logger.Debug("Cleared existing cache_control from request")
 }
 
 // CollectCacheCandidates finds all potential cache breakpoints
@@ -321,12 +347,12 @@ func (ci *CacheInjector) ApplyCacheControl(candidates []CacheCandidate) []types.
 			breakpoints = append(breakpoints, breakpoint)
 
 			ci.logger.WithFields(logrus.Fields{
-				"position":      candidate.Position,
-				"tokens":        candidate.Tokens,
-				"ttl":           candidate.TTL,
-				"write_cost":    pricing.FormatCost(candidate.WriteCost),
-				"read_savings":  pricing.FormatCost(candidate.ReadSavings),
-				"break_even":    candidate.BreakEven,
+				"position":     candidate.Position,
+				"tokens":       candidate.Tokens,
+				"ttl":          candidate.TTL,
+				"write_cost":   pricing.FormatCost(candidate.WriteCost),
+				"read_savings": pricing.FormatCost(candidate.ReadSavings),
+				"break_even":   candidate.BreakEven,
 			}).Debug("Applied cache control")
 		}
 	}
@@ -396,8 +422,8 @@ func (ci *CacheInjector) calculateMetadata(req *types.AnthropicRequest, breakpoi
 // Helper function for case-insensitive string contains
 func containsCaseInsensitive(text, substr string) bool {
 	return len(text) >= len(substr) &&
-		   len(substr) > 0 &&
-		   findSubstringIgnoreCase(text, substr)
+		len(substr) > 0 &&
+		findSubstringIgnoreCase(text, substr)
 }
 
 func findSubstringIgnoreCase(text, substr string) bool {
