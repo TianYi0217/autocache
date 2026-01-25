@@ -500,7 +500,6 @@ func (ah *AutocacheHandler) HandleSavings(w http.ResponseWriter, r *http.Request
 	_ = json.NewEncoder(w).Encode(response)
 }
 
-
 // HandleModels handles GET /v1/models requests
 func (ah *AutocacheHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -540,7 +539,7 @@ func (ah *AutocacheHandler) HandleModels(w http.ResponseWriter, r *http.Request)
 
 	// Write the response
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(responseBody)
 }
 
