@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2025-10-26
+
+### Fixed
+- Real-time streaming with proper HTTP flushing for server-sent events (SSE) (#8)
+  - Replaced `io.Copy()` with manual read/write loop with immediate `Flush()` calls
+  - Implemented `http.Flusher` interface on `responseWrapper`
+  - Use 512-byte buffer optimized for Anthropic SSE events (typically 100-200 bytes)
+  - Proper error handling for write vs read errors
+  - Graceful degradation when underlying ResponseWriter doesn't support flushing
+
+### Changed
+- Streaming responses now deliver content in real-time instead of buffering until completion
+- Significantly improved user experience for streaming requests
+
+### Added
+- Unit tests for `responseWrapper.Flush()` implementation
+- Test coverage for graceful degradation scenarios
+
+**Contributors:** @TianYi0217
+
+## [1.0.3] - 2025-10-25
+
+### Fixed
+- System prompt caching for string format (#4, #5)
+  - Convert system strings to SystemBlocks when cacheable (>= min tokens)
+  - Add proper JSON handling for both string and array formats
+  - Add `MarshalJSON` to output SystemBlocks as "system" array
+  - Add `UnmarshalJSON` to accept both string and array formats
+
+### Technical Details
+- Previously, system prompts using string format were never cached regardless of size
+- Cache control can only be applied to blocks format, so strings are now converted when cacheable
+- All 81 tests pass with end-to-end API validation
+
+## [1.0.2] - 2025-10-22
+
+### Fixed
+- Version information not being set via ldflags (#7)
+- System prompt caching for string format (#4, #5)
+
+### Documentation
+- Add 'Getting Started with Docker' section to README (#3)
+
+## [1.0.1] - 2025-10-08
+
+### Fixed
+- API key header forwarding bug (#2)
+  - Fix case-sensitivity bug where duplicate API key headers were sent
+  - Remove existing auth headers before adding normalized x-api-key
+  - Add debug logging and secure maskAPIKey helper function
+  - Proper handling of Authorization, X-Api-Key, and anthropic-api-key headers
+
 ## [1.0.0] - 2025-10-08
 
 ### Added
@@ -61,4 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graceful shutdown handling
 - HTTPS support for Anthropic API communication
 
+[1.0.4]: https://github.com/montevive/autocache/releases/tag/v1.0.4
+[1.0.3]: https://github.com/montevive/autocache/releases/tag/v1.0.3
+[1.0.2]: https://github.com/montevive/autocache/releases/tag/v1.0.2
+[1.0.1]: https://github.com/montevive/autocache/releases/tag/v1.0.1
 [1.0.0]: https://github.com/montevive/autocache/releases/tag/v1.0.0

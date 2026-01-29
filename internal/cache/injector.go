@@ -97,15 +97,15 @@ func (ci *CacheInjector) GetPricing() *pricing.PricingCalculator {
 
 // CacheCandidate represents a potential cache breakpoint
 type CacheCandidate struct {
-	Position     string  // "system", "tools", "message_0_block_1", etc.
-	Tokens       int     // Token count
-	ContentType  string  // "system", "tools", "content"
-	TTL          string  // "5m" or "1h"
-	ROIScore     float64 // ROI score for prioritization
-	WriteCost    float64 // Cost to write cache
-	ReadSavings  float64 // Savings per read
-	BreakEven    int     // Requests to break even
-	Content      interface{} // Reference to the actual content (for modification)
+	Position    string      // "system", "tools", "message_0_block_1", etc.
+	Tokens      int         // Token count
+	ContentType string      // "system", "tools", "content"
+	TTL         string      // "5m" or "1h"
+	ROIScore    float64     // ROI score for prioritization
+	WriteCost   float64     // Cost to write cache
+	ReadSavings float64     // Savings per read
+	BreakEven   int         // Requests to break even
+	Content     interface{} // Reference to the actual content (for modification)
 }
 
 // InjectCacheControl analyzes a request and injects optimal cache control
@@ -117,6 +117,9 @@ func (ci *CacheInjector) InjectCacheControl(req *types.AnthropicRequest) (*types
 		"strategy": ci.strategy,
 	}).Debug("Starting cache injection analysis")
 
+	// Clear any existing cache_control to avoid exceeding the 4-block limit
+	ci.ClearExistingCacheControl(req)
+
 	// Get strategy configuration
 	strategyConfig := types.GetStrategyConfig(ci.strategy)
 	minimumTokens := ci.tokenizer.GetModelMinimumTokens(req.Model)
@@ -125,8 +128,9 @@ func (ci *CacheInjector) InjectCacheControl(req *types.AnthropicRequest) (*types
 	// Collect all cache candidates in deterministic order (system → tools → messages)
 	candidates := ci.CollectCacheCandidates(req, adjustedMinimum, strategyConfig)
 
-	// Candidates are already in deterministic order, no sorting needed
-	// This ensures consistent breakpoint placement: system → tools → messages
+	// Apply TTL upgrade logic: if any candidate has 1h TTL, upgrade all preceding ones to 1h
+	// This ensures cache protocol compliance and hierarchy consistency
+	ci.upgradeTTLHierarchy(candidates, req.Model)
 
 	// Select top candidates respecting breakpoint limit
 	maxBreakpoints := strategyConfig.MaxBreakpoints
@@ -141,15 +145,38 @@ func (ci *CacheInjector) InjectCacheControl(req *types.AnthropicRequest) (*types
 	metadata := ci.calculateMetadata(req, breakpoints, startTime)
 
 	ci.logger.WithFields(logrus.Fields{
-		"total_tokens":   metadata.TotalTokens,
-		"cached_tokens":  metadata.CachedTokens,
-		"cache_ratio":    metadata.CacheRatio,
-		"breakpoints":    len(breakpoints),
-		"roi_percent":    metadata.ROI.PercentSavings,
-		"break_even":     metadata.ROI.BreakEvenRequests,
+		"total_tokens":  metadata.TotalTokens,
+		"cached_tokens": metadata.CachedTokens,
+		"cache_ratio":   metadata.CacheRatio,
+		"breakpoints":   len(breakpoints),
+		"roi_percent":   metadata.ROI.PercentSavings,
+		"break_even":    metadata.ROI.BreakEvenRequests,
 	}).Info("Cache injection completed")
 
 	return metadata, nil
+}
+
+// ClearExistingCacheControl removes all existing cache_control from a request
+// This prevents exceeding the 4-block limit when injecting new cache controls
+func (ci *CacheInjector) ClearExistingCacheControl(req *types.AnthropicRequest) {
+	// Clear cache control from SystemBlocks
+	for i := range req.SystemBlocks {
+		req.SystemBlocks[i].CacheControl = nil
+	}
+
+	// Clear cache control from Tools
+	for i := range req.Tools {
+		req.Tools[i].CacheControl = nil
+	}
+
+	// Clear cache control from Messages
+	for i := range req.Messages {
+		for j := range req.Messages[i].Content {
+			req.Messages[i].Content[j].CacheControl = nil
+		}
+	}
+
+	ci.logger.Debug("Cleared existing cache_control from request")
 }
 
 // CollectCacheCandidates finds all potential cache breakpoints
@@ -276,6 +303,67 @@ func (ci *CacheInjector) CalculateROIScore(tokens int, writeCost, readSavings fl
 	return score
 }
 
+// upgradeTTLHierarchy ensures cache hierarchy consistency by upgrading TTLs when needed
+// If any candidate has 1h TTL, all preceding candidates are upgraded to 1h TTL
+// This satisfies Anthropic's cache protocol requirement for proper hierarchy
+func (ci *CacheInjector) upgradeTTLHierarchy(candidates []CacheCandidate, model string) {
+	// First pass: find the last 1h TTL position
+	lastOneHourIndex := -1
+	for i, candidate := range candidates {
+		if candidate.TTL == "1h" {
+			lastOneHourIndex = i
+		}
+	}
+
+	if lastOneHourIndex == -1 {
+		ci.logger.Debug("No 1h TTL candidates found, no upgrade needed")
+		return
+	}
+
+	// Second pass: upgrade all candidates before and including the last 1h position
+	upgradedCount := 0
+	for i := 0; i <= lastOneHourIndex; i++ {
+		if candidates[i].TTL != "1h" {
+			originalTTL := candidates[i].TTL
+			candidates[i].TTL = "1h"
+			
+			// Recalculate costs with new TTL using a default model
+			// The exact model doesn't affect the upgrade logic significantly
+			writeCost, readSavings, breakEven, _ := ci.pricing.EstimateBreakpointROI(
+				model, // Use consistent model for calculation
+				candidates[i].Tokens, 
+				"1h")
+			
+			candidates[i].WriteCost = writeCost
+			candidates[i].ReadSavings = readSavings
+			candidates[i].BreakEven = breakEven
+			
+			// Recalculate ROI score with new values
+			candidates[i].ROIScore = ci.CalculateROIScore(
+				candidates[i].Tokens, 
+				writeCost, 
+				readSavings, 
+				breakEven, 
+				candidates[i].ContentType)
+
+			upgradedCount++
+			
+			ci.logger.WithFields(logrus.Fields{
+				"position":     candidates[i].Position,
+				"original_ttl": originalTTL,
+				"upgraded_ttl": "1h",
+				"tokens":       candidates[i].Tokens,
+			}).Debug("Upgraded cache TTL for hierarchy consistency")
+		}
+	}
+
+	ci.logger.WithFields(logrus.Fields{
+		"upgraded_count": upgradedCount,
+		"total_candidates": len(candidates),
+		"last_1h_index": lastOneHourIndex,
+	}).Info("Applied TTL hierarchy upgrade")
+}
+
 // DetermineTTLForContent determines appropriate TTL based on content characteristics
 func (ci *CacheInjector) DetermineTTLForContent(text string, strategyConfig types.StrategyConfig) string {
 	// Check for stable patterns that might benefit from longer caching
@@ -321,12 +409,12 @@ func (ci *CacheInjector) ApplyCacheControl(candidates []CacheCandidate) []types.
 			breakpoints = append(breakpoints, breakpoint)
 
 			ci.logger.WithFields(logrus.Fields{
-				"position":      candidate.Position,
-				"tokens":        candidate.Tokens,
-				"ttl":           candidate.TTL,
-				"write_cost":    pricing.FormatCost(candidate.WriteCost),
-				"read_savings":  pricing.FormatCost(candidate.ReadSavings),
-				"break_even":    candidate.BreakEven,
+				"position":     candidate.Position,
+				"tokens":       candidate.Tokens,
+				"ttl":          candidate.TTL,
+				"write_cost":   pricing.FormatCost(candidate.WriteCost),
+				"read_savings": pricing.FormatCost(candidate.ReadSavings),
+				"break_even":   candidate.BreakEven,
 			}).Debug("Applied cache control")
 		}
 	}
@@ -396,8 +484,8 @@ func (ci *CacheInjector) calculateMetadata(req *types.AnthropicRequest, breakpoi
 // Helper function for case-insensitive string contains
 func containsCaseInsensitive(text, substr string) bool {
 	return len(text) >= len(substr) &&
-		   len(substr) > 0 &&
-		   findSubstringIgnoreCase(text, substr)
+		len(substr) > 0 &&
+		findSubstringIgnoreCase(text, substr)
 }
 
 func findSubstringIgnoreCase(text, substr string) bool {

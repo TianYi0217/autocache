@@ -17,9 +17,9 @@ import (
 
 // ProxyClient handles communication with the Anthropic API
 type ProxyClient struct {
-	httpClient  *http.Client
+	httpClient   *http.Client
 	anthropicURL string
-	logger      *logrus.Logger
+	logger       *logrus.Logger
 }
 
 // NewProxyClient creates a new proxy client
@@ -46,6 +46,14 @@ func (pc *ProxyClient) ForwardRequest(req *types.AnthropicRequest, headers map[s
 		"url":       pc.anthropicURL + "/v1/messages",
 		"body_size": len(requestBody),
 	}).Debug("Forwarding request to Anthropic API")
+
+	// Log full upstream request body at debug level
+	if pc.logger.Level >= logrus.DebugLevel {
+		var prettyJSON bytes.Buffer
+		if err := json.Indent(&prettyJSON, requestBody, "", "  "); err == nil {
+			pc.logger.WithField("upstream_request_body", prettyJSON.String()).Debug("Actual request body sent to Anthropic API")
+		}
+	}
 
 	// Create HTTP request
 	httpReq, err := http.NewRequest("POST", pc.anthropicURL+"/v1/messages", bytes.NewBuffer(requestBody))
@@ -105,6 +113,14 @@ func (pc *ProxyClient) ForwardStreamingRequest(req *types.AnthropicRequest, head
 		"streaming": true,
 		"url":       pc.anthropicURL + "/v1/messages",
 	}).Debug("Forwarding streaming request to Anthropic API")
+
+	// Log full upstream request body at debug level
+	if pc.logger.Level >= logrus.DebugLevel {
+		var prettyJSON bytes.Buffer
+		if err := json.Indent(&prettyJSON, requestBody, "", "  "); err == nil {
+			pc.logger.WithField("upstream_request_body", prettyJSON.String()).Debug("Actual streaming request body sent to Anthropic API")
+		}
+	}
 
 	// Create HTTP request
 	httpReq, err := http.NewRequest("POST", pc.anthropicURL+"/v1/messages", bytes.NewBuffer(requestBody))
@@ -227,12 +243,12 @@ func (pc *ProxyClient) ReadAndParseResponse(resp *http.Response) (*types.Anthrop
 	}
 
 	pc.logger.WithFields(logrus.Fields{
-		"id":            anthropicResp.ID,
-		"model":         anthropicResp.Model,
-		"input_tokens":  anthropicResp.Usage.InputTokens,
-		"output_tokens": anthropicResp.Usage.OutputTokens,
+		"id":             anthropicResp.ID,
+		"model":          anthropicResp.Model,
+		"input_tokens":   anthropicResp.Usage.InputTokens,
+		"output_tokens":  anthropicResp.Usage.OutputTokens,
 		"cache_creation": anthropicResp.Usage.CacheCreationInputTokens,
-		"cache_read":    anthropicResp.Usage.CacheReadInputTokens,
+		"cache_read":     anthropicResp.Usage.CacheReadInputTokens,
 	}).Info("Successfully parsed Anthropic response")
 
 	return &anthropicResp, body, nil
@@ -293,14 +309,15 @@ func ExtractAPIKey(headers http.Header, logger *logrus.Logger) string {
 		logger.Debug("Found API key in Authorization header")
 		// Remove "Bearer " prefix if present
 		if strings.HasPrefix(auth, "Bearer ") {
-			return strings.TrimPrefix(auth, "Bearer ")
+			return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 		}
-		return auth
+		return strings.TrimSpace(auth)
 	}
 
 	// Check x-api-key header
 	apiKey := headers.Get("x-api-key")
 	if apiKey != "" {
+		apiKey = strings.TrimSpace(apiKey)
 		logger.WithFields(logrus.Fields{
 			"api_key_preview": maskAPIKey(apiKey),
 		}).Debug("Found API key in x-api-key header")
@@ -311,7 +328,7 @@ func ExtractAPIKey(headers http.Header, logger *logrus.Logger) string {
 	anthropicKey := headers.Get("anthropic-api-key")
 	if anthropicKey != "" {
 		logger.Debug("Found API key in anthropic-api-key header")
-		return anthropicKey
+		return strings.TrimSpace(anthropicKey)
 	}
 
 	logger.Debug("No API key found in request headers")
@@ -357,15 +374,15 @@ func maskAPIKey(apiKey string) string {
 // shouldSkipHeader determines if a header should be skipped when forwarding
 func shouldSkipHeader(header string) bool {
 	skipHeaders := map[string]bool{
-		"content-length":    true,
-		"transfer-encoding": true,
-		"connection":        true,
-		"upgrade":           true,
-		"proxy-connection":  true,
+		"content-length":      true,
+		"transfer-encoding":   true,
+		"connection":          true,
+		"upgrade":             true,
+		"proxy-connection":    true,
 		"proxy-authorization": true,
-		"te":                true,
-		"trailer":           true,
-		"host":              true,
+		"te":                  true,
+		"trailer":             true,
+		"host":                true,
 	}
 
 	return skipHeaders[strings.ToLower(header)]
@@ -448,4 +465,14 @@ func (pc *ProxyClient) LogRequestSummary(req *types.AnthropicRequest) {
 		"temperature":   req.Temperature,
 		"streaming":     IsStreamingRequest(req),
 	}).Info("Processing request")
+
+	// Log full request body at debug level
+	if pc.logger.Level >= logrus.DebugLevel {
+		requestJSON, err := json.MarshalIndent(req, "", "  ")
+		if err != nil {
+			pc.logger.WithError(err).Debug("Failed to marshal request for debug logging")
+		} else {
+			pc.logger.WithField("request_body", string(requestJSON)).Debug("Full request body")
+		}
+	}
 }

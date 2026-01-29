@@ -53,7 +53,7 @@ func LoadConfig() (*Config, error) {
 		Host: getEnvWithDefault("HOST", "0.0.0.0"),
 
 		AnthropicURL:    getEnvWithDefault("ANTHROPIC_API_URL", "https://api.anthropic.com"),
-		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
+		AnthropicAPIKey: strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
 
 		CacheStrategy: getEnvWithDefault("CACHE_STRATEGY", "moderate"),
 

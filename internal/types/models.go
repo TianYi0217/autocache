@@ -8,8 +8,26 @@ import (
 
 // CacheControl represents the cache control configuration
 type CacheControl struct {
-	Type string `json:"type"` // "ephemeral"
-	TTL  string `json:"ttl"`  // "5m" or "1h"
+	Type string `json:"type"`          // "ephemeral"
+	TTL  string `json:"ttl,omitempty"` // "5m" or "1h", omitted if empty
+}
+
+// UnmarshalJSON implements custom unmarshaling for CacheControl to handle empty TTL
+func (cc *CacheControl) UnmarshalJSON(data []byte) error {
+	type Alias CacheControl
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(cc),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	// Set default TTL if empty
+	if cc.TTL == "" {
+		cc.TTL = "5m"
+	}
+	return nil
 }
 
 // ContentBlock represents a content block in a message
@@ -117,7 +135,7 @@ func (r *AnthropicRequest) MarshalJSON() ([]byte, error) {
 			Model         string           `json:"model"`
 			MaxTokens     int              `json:"max_tokens"`
 			Messages      []Message        `json:"messages"`
-			System        interface{}      `json:"system,omitempty"`        // Use interface{} to allow array
+			System        interface{}      `json:"system,omitempty"` // Use interface{} to allow array
 			Tools         []ToolDefinition `json:"tools,omitempty"`
 			Temperature   *float64         `json:"temperature,omitempty"`
 			TopP          *float64         `json:"top_p,omitempty"`
@@ -206,12 +224,12 @@ type Usage struct {
 
 // CacheBreakpoint represents a cache breakpoint decision
 type CacheBreakpoint struct {
-	Position    string    `json:"position"`     // "system", "tools", "message_0_block_1"
-	Tokens      int       `json:"tokens"`       // Number of tokens cached
-	TTL         string    `json:"ttl"`          // "5m" or "1h"
-	Type        string    `json:"type"`         // "system", "tools", "content"
-	WritePrice  float64   `json:"write_price"`  // Cost to write this cache
-	ReadSavings float64   `json:"read_savings"` // Savings per read
+	Position    string    `json:"position"`      // "system", "tools", "message_0_block_1"
+	Tokens      int       `json:"tokens"`        // Number of tokens cached
+	TTL         string    `json:"ttl,omitempty"` // "5m" or "1h", omitted if empty
+	Type        string    `json:"type"`          // "system", "tools", "content"
+	WritePrice  float64   `json:"write_price"`   // Cost to write this cache
+	ReadSavings float64   `json:"read_savings"`  // Savings per read
 	Timestamp   time.Time `json:"timestamp"`
 }
 
@@ -230,15 +248,15 @@ type ROIMetrics struct {
 
 // CacheMetadata represents metadata about caching decisions
 type CacheMetadata struct {
-	CacheInjected bool               `json:"cache_injected"`
-	TotalTokens   int                `json:"total_tokens"`
-	CachedTokens  int                `json:"cached_tokens"`
-	CacheRatio    float64            `json:"cache_ratio"` // Percentage of tokens cached
-	Breakpoints   []CacheBreakpoint  `json:"breakpoints"`
-	ROI           ROIMetrics         `json:"roi"`
-	Strategy      string             `json:"strategy"` // "aggressive", "moderate", "conservative"
-	Model         string             `json:"model"`
-	Timestamp     time.Time          `json:"timestamp"`
+	CacheInjected bool              `json:"cache_injected"`
+	TotalTokens   int               `json:"total_tokens"`
+	CachedTokens  int               `json:"cached_tokens"`
+	CacheRatio    float64           `json:"cache_ratio"` // Percentage of tokens cached
+	Breakpoints   []CacheBreakpoint `json:"breakpoints"`
+	ROI           ROIMetrics        `json:"roi"`
+	Strategy      string            `json:"strategy"` // "aggressive", "moderate", "conservative"
+	Model         string            `json:"model"`
+	Timestamp     time.Time         `json:"timestamp"`
 }
 
 // CacheStrategy represents different caching strategies
