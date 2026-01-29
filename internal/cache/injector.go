@@ -128,8 +128,9 @@ func (ci *CacheInjector) InjectCacheControl(req *types.AnthropicRequest) (*types
 	// Collect all cache candidates in deterministic order (system → tools → messages)
 	candidates := ci.CollectCacheCandidates(req, adjustedMinimum, strategyConfig)
 
-	// Candidates are already in deterministic order, no sorting needed
-	// This ensures consistent breakpoint placement: system → tools → messages
+	// Apply TTL upgrade logic: if any candidate has 1h TTL, upgrade all preceding ones to 1h
+	// This ensures cache protocol compliance and hierarchy consistency
+	ci.upgradeTTLHierarchy(candidates, req.Model)
 
 	// Select top candidates respecting breakpoint limit
 	maxBreakpoints := strategyConfig.MaxBreakpoints
@@ -300,6 +301,67 @@ func (ci *CacheInjector) CalculateROIScore(tokens int, writeCost, readSavings fl
 	}
 
 	return score
+}
+
+// upgradeTTLHierarchy ensures cache hierarchy consistency by upgrading TTLs when needed
+// If any candidate has 1h TTL, all preceding candidates are upgraded to 1h TTL
+// This satisfies Anthropic's cache protocol requirement for proper hierarchy
+func (ci *CacheInjector) upgradeTTLHierarchy(candidates []CacheCandidate, model string) {
+	// First pass: find the last 1h TTL position
+	lastOneHourIndex := -1
+	for i, candidate := range candidates {
+		if candidate.TTL == "1h" {
+			lastOneHourIndex = i
+		}
+	}
+
+	if lastOneHourIndex == -1 {
+		ci.logger.Debug("No 1h TTL candidates found, no upgrade needed")
+		return
+	}
+
+	// Second pass: upgrade all candidates before and including the last 1h position
+	upgradedCount := 0
+	for i := 0; i <= lastOneHourIndex; i++ {
+		if candidates[i].TTL != "1h" {
+			originalTTL := candidates[i].TTL
+			candidates[i].TTL = "1h"
+			
+			// Recalculate costs with new TTL using a default model
+			// The exact model doesn't affect the upgrade logic significantly
+			writeCost, readSavings, breakEven, _ := ci.pricing.EstimateBreakpointROI(
+				model, // Use consistent model for calculation
+				candidates[i].Tokens, 
+				"1h")
+			
+			candidates[i].WriteCost = writeCost
+			candidates[i].ReadSavings = readSavings
+			candidates[i].BreakEven = breakEven
+			
+			// Recalculate ROI score with new values
+			candidates[i].ROIScore = ci.CalculateROIScore(
+				candidates[i].Tokens, 
+				writeCost, 
+				readSavings, 
+				breakEven, 
+				candidates[i].ContentType)
+
+			upgradedCount++
+			
+			ci.logger.WithFields(logrus.Fields{
+				"position":     candidates[i].Position,
+				"original_ttl": originalTTL,
+				"upgraded_ttl": "1h",
+				"tokens":       candidates[i].Tokens,
+			}).Debug("Upgraded cache TTL for hierarchy consistency")
+		}
+	}
+
+	ci.logger.WithFields(logrus.Fields{
+		"upgraded_count": upgradedCount,
+		"total_candidates": len(candidates),
+		"last_1h_index": lastOneHourIndex,
+	}).Info("Applied TTL hierarchy upgrade")
 }
 
 // DetermineTTLForContent determines appropriate TTL based on content characteristics
